@@ -1,0 +1,22 @@
+---
+version: '2.3'
+
+x-logging-json: &logging-json
+  logging:
+    driver: json-file
+    options:
+      max-file: "1"
+      max-size: "50M"
+
+services:
+  pushgateway:
+    <<: *logging-json
+    image: ${DOCKER_REGISTRY}prom/pushgateway:${PUSHGATEWAY_VERSION}
+
+  vault:
+    <<: *logging-json
+    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}vault:${VAULT_VERSION}
+
+  consul:
+    <<: *logging-json
+    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}consul:${CONSUL_VERSION}
