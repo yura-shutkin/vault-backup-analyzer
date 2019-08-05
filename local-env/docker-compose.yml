@@ -20,9 +20,20 @@ services:
     image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}vault:${VAULT_VERSION:-1.2.0}
     ports:
       - "${VAULT_BOUND_ADDR}:${VAULT_PORT:-8200}:8200"
+    volumes:
+      - "./vault.hcl:/vault/config/vault.hcl:ro"
+    depends_on:
+      consul:
+        condition: service_started
 
   consul:
     <<: *logging-json
     image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}consul:${CONSUL_VERSION:-1.5.3}
     ports:
       - "${CONSUL_BOUND_ADDR}:${CONSUL_PORT:-8500}:8500"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:8500/v1/status/leader"]
+      interval: 1s
+      timeout: 1s
+      retries: 60
+      start_period: 5s
