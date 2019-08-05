@@ -11,12 +11,18 @@ x-logging-json: &logging-json
 services:
   pushgateway:
     <<: *logging-json
-    image: ${DOCKER_REGISTRY}prom/pushgateway:${PUSHGATEWAY_VERSION}
+    image: ${DOCKER_REGISTRY}prom/pushgateway:${PUSHGATEWAY_VERSION:-v0.9.1}
+    ports:
+      - "${PUSHGATEWAY_BOUND_ADDR}:${PUSHGATEWAY_PORT}:9091"
 
   vault:
     <<: *logging-json
-    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}vault:${VAULT_VERSION}
+    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}vault:${VAULT_VERSION:-1.2.0}
+    ports:
+      - "${VAULT_BOUND_ADDR}:${VAULT_PORT:-8200}:8200"
 
   consul:
     <<: *logging-json
-    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}consul:${CONSUL_VERSION}
+    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}consul:${CONSUL_VERSION:-1.5.3}
+    ports:
+      - "${CONSUL_BOUND_ADDR}:${CONSUL_PORT:-8500}:8500"
