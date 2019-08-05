@@ -22,6 +22,8 @@ services:
       - "${VAULT_BOUND_ADDR}:${VAULT_PORT:-8200}:8200"
     volumes:
       - "./vault.hcl:/vault/config/vault.hcl:ro"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID}
     depends_on:
       consul:
         condition: service_started
