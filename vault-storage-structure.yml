@@ -6,14 +6,52 @@ kv_root:
       - UUID:
           - salt
   - auth:
-      - UUID:
+      - UUID_of_ldap:
+          - user:
+              - user_name
+              - user_name
+              - user_name
+          - group:
+              - group_name
+              - group_name
+              - group_name
+              - group_name
           - config
+      - UUID_of_kubernetes:
+          - role:
+              - role_name
+              - role_name
+          - config
+      - UUID_of_approle:
+          - accessor:
+            comment: secret_ids
+              - hash_str
+              - hash_str
+              - hash_str
+          - role_id:
+            comment: list of approle role-id
+              - hash_str
+          - role:
+            comment: list of approle names
+              - approle-name
+          - secret_id:
+              - hash_str:
+                comment: list of approle secret-ids
+                  - hash_str
+                  - hash_str
+                  - hash_str
+          - UUID_of_userpass:
+              - user:
+                  - userpass_user_name
+                  - userpass_user_name
+                  - userpass_user_name
+          - salt
   - core:
       - cluster:
           - local:
               - info
       - leader:
-          - UUID`
+          - UUID
       - wrapping:
           - jwtkey
       - audit
@@ -32,6 +70,8 @@ kv_root:
               - path:
                   - to:
                       - secret
+                  - secret
+              - secret
       - UUID_of_KV_v1:
           - path:
               - to:
@@ -43,11 +83,15 @@ kv_root:
               - archive:
                   - metadata
               - metadata:
-                  - hash_str:
-                      - hash_str
+                  - hash_path:
+                      - hash_path:
+                          - hash_secret_name
+                      - hash_secret_name
+                  - hash_secret_name
               - policy:
                   - metadata
               - versions:
+                comment: Whole secrets versions
                   - version1:
                       - hash_str
                   - version2:
@@ -63,6 +107,13 @@ kv_root:
               - key_name1
               - key_name2
               - key_name3
+      - UUID_of_identity:
+          - packer:
+              - buckets:
+                comment: auth backends, after at least one login
+                  - 47
+                  - 94
+                  - 96
   - sys:
       - counters:
           requests:
