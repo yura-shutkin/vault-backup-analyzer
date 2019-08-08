@@ -5,3 +5,8 @@ storage "consul" {
   service_tags = "vault-local"
   service_address = "vault-local-node"
 }
+
+telemetry {
+  disable_hostname = true
+  prometheus_retention_time = "1h"
+}
