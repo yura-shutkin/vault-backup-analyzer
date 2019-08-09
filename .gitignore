@@ -1,0 +1,6 @@
+.venv
+.idea
+
+*.json
+*.snap
+.env
