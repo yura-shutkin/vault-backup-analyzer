@@ -40,12 +40,12 @@ kv_root:
                   - hash_str
                   - hash_str
                   - hash_str
-          - UUID_of_userpass:
-              - user:
-                  - userpass_user_name
-                  - userpass_user_name
-                  - userpass_user_name
-          - salt
+      - UUID_of_userpass:
+          - user:
+              - userpass_user_name
+              - userpass_user_name
+              - userpass_user_name
+      - salt
   - core:
       - cluster:
           - local:
