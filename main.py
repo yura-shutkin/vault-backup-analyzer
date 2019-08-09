@@ -1,22 +1,34 @@
 import json
 import sys
-import os
+import hvac
+import socket
 
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
 
-class Metrics():
-    token_count = Gauge('token_count', 'Number of tokens found in a backup')
-    token_size = Gauge('token_size', 'Size of encrypted tokens found in a backup')
+class Metrics:
+    def __init__(self, registry, pushgateway_addr, labelnames, labelvalues):
+        self.registry = registry
+        self.pushgateway_addr = pushgateway_addr
+        self.grouping_key = dict(zip(labelnames, labelvalues))
+        self.grouping_key['instance'] = socket.gethostname()
+        self.metrics = {
+            'total_metrics': Gauge('total_metrics', 'Metrics total from vault backup', registry=self.registry)}
+        self.metrics['total_metrics'].set(1)
 
-    @classmethod
-    def get_empty(cls):
-        return {k.set(0) for k in cls.__dict__}
+    def inc(self, metric_name, metric_description, metric_value=1, metric_type='gauge'):
+        if metric_name not in self.metrics:
+            if 'gauge' == metric_type:
+                self.metrics[metric_name] = Gauge(metric_name, metric_description, registry=self.registry)
+                self.metrics[metric_name].set(metric_value)
+                self.metrics['total_metrics'].inc()
+        else:
+            if isinstance(self.metrics[metric_name], Gauge):
+                self.metrics[metric_name].inc(metric_value)
 
-    # token_count.labels(env='local', group='vault')
-    # token_count.set(stats['token_count'])
-
-    # total_count = 'Number of tokens found in a backup', 0
+    def push_metrics(self):
+        push_to_gateway(self.pushgateway_addr, job='vault_backup_analyzer',
+                        grouping_key=self.grouping_key, registry=self.registry)
 
 
 def read_in_chunks(file_object, chunk_size=1024):
@@ -29,57 +41,56 @@ def read_in_chunks(file_object, chunk_size=1024):
         yield data
 
 
-def process_backup(backup_file_name):
-    statistics = {
-        "f_name": backup_file_name,
-        "token_count": 0,
-        "token_size": 0,
-        "token_accessor_count": 0,
-        "token_accessor_size": 0,
-        "policy_count": 0,
-        "policy_size": 0,
-        "secret_count": 0,
-        "secret_size": 0,
-        "group_count": 0,
-        "group_size": 0,
-        "approle_id_count": 0,
-        "approle_id_size": 0,
-        "approle_count": 0,
-        "approle_size": 0,
-        "secret_id_count": 0,
-        "secret_id_size": 0,
-        "userpass_user_count": 0,
-        "userpass_user_size": 0,
-        "approle_expire_count": 0,
-        "approle_expire_size": 0,
-        "ldap_expire_count": 0,
-        "ldap_expire_size": 0,
-        "token_expire_count": 0,
-        "token_expire_size": 0,
-        "userpass_user_expire_count": 0,
-        "userpass_user_expire_size": 0,
-    }
+def process_backup(backup_file_name, metrics, auth_backends, secrets_engines):
     buffer = ""
-    count = 0
 
     with open(backup_file_name, 'r') as backup_file:
         for piece in read_in_chunks(backup_file):
-            statistics, buffer, count = process_element(statistics, buffer + piece, count)
-    return statistics
+            metrics, buffer = process_element(metrics, buffer + piece, auth_backends, secrets_engines)
+    return metrics
 
 
-def process_element(statistics, buffer, items_count):
-    def update_statistics(attribute, attr_val):
-        nonlocal statistics
-        statistics["{}_count".format(attribute)] += 1
-        sizeof = sys.getsizeof(attr_val)
-        statistics["{}_size".format(attribute)] += sizeof
-        print('{}: Found a {} no {} with size {}'.format(statistics["f_name"], attribute,
-                                                         statistics["{}_count".format(attribute)], sizeof))
+def update_metrics(metrics_pool, prefix, name, m_type='objects', value=1, size=0):
+    def inc_metric(postfix, val):
+        # <prefix>_<name>_count
+        # <prefix>_<name>_size
+        # auth_approle_count
+        # auth_approle_size
+        # auth_approle_secret_id_count
+        # auth_approle_secret_size
+        # secrets_kv-project_count
+        # secrets_kv-project_size
+        # secrets_kv-project_secrets_count
+        # secrets_kv-project_secrets_size
+        # secrets_kv-project_versions_count
+        # secrets_kv-project_versions_size
+        # audit_devices_count
+        # audit_devices_size
+        m_name = '_'.join((prefix, name, postfix))
+        # Ensure all dashes replased with ground
+        m_name = m_name.replace('-', '_')
+        # Ensure all slashes replased with ground
+        m_name = m_name.replace('/', '_')
 
+        metrics_pool.inc(m_name, description, val)
+
+    # Total <m_type> count in <name>
+    # Total size of <m_type> in <name>
+    # Total versions count in project_1234_secrets
+    # Total objects count in core
+    # Total roles count in auth_kubernetes
+    description = 'Total {} count in {}'.format(m_type, name)
+    inc_metric('count', value)
+
+    description = 'Total size of {} in {}'.format(m_type, name)
+    inc_metric('size', size)
+
+    return metrics_pool
+
+
+def process_element(prom_metrics, buffer, authbackends, secretsengines):
     def search_for_dict():
         nonlocal buffer
-        nonlocal items_count
         dict_start = buffer.find('{')
 
         if 0 != dict_start:
@@ -88,8 +99,6 @@ def process_element(statistics, buffer, items_count):
         dict_end = buffer.find('}')
 
         if -1 != dict_end:
-            items_count += 1
-            print(items_count)
             found = buffer[dict_start: dict_end + 1]
             buffer = buffer[dict_end + 1:]
             return json.loads(found)
@@ -111,174 +120,385 @@ def process_element(statistics, buffer, items_count):
             print('No key field found')
             exit(1)
 
-        if '/audit/' in element[field]:
-            pass
-        if '/auth/' in element[field]:
-            if '/expire/' in element[field]:
-                pass
+        path = element[field].split('/')
+
+        # objects_total_devices
+        prom_metrics = update_metrics(prom_metrics, 'objects', 'total', 'objects', value=1,
+                                      size=sys.getsizeof(element[value]))
+
+        if 'audit' == path[1]:
+            # audit_devices
+            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'devices', value=1,
+                                          size=sys.getsizeof(element[value]))
+        elif 'core' == path[1]:
+            # core_objects
+            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
+                                          size=sys.getsizeof(element[value]))
+        elif 'auth' == path[1]:
+            # auth_objects
+            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
+                                          size=sys.getsizeof(element[value]))
+
+            if 'userpass' == authbackends[path[2]]['type']:
+                # auth_<auth_backend>_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+                if 'user' == path[3]:
+                    # auth_userpass_users
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'users', 'users', value=1, size=sys.getsizeof(element[value]))
+
+                else:
+                    # auth_userpass_unknown_objects
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'unknown_objects', 'unknown objects', value=1,
+                                                  size=sys.getsizeof(element[value]))
+                    # for debug
+                    print(authbackends[path[2]]['name'], path)
+
+            elif 'ldap' == authbackends[path[2]]['type']:
+                # auth_ldap_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+                if 'user' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  path[3], value=1, size=sys.getsizeof(element[value]))
+
+                elif 'group' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  path[3], value=1, size=sys.getsizeof(element[value]))
+
+                elif path[3] in ['config', 'salt']:
+                    # already counted
+                    pass
+
+                else:
+                    # auth_ldap_unknown_objects
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'unknown_objects', 'unknown objects', value=1,
+                                                  size=sys.getsizeof(element[value]))
+                    # for debug
+                    print(authbackends[path[2]]['name'], path)
+
+            elif 'approle' == authbackends[path[2]]['type']:
+                # auth_approle_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+                # auth_approle_secret_id_accessors
+                if 'accessor' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'secret_id_accessors', 'secret-id accessors',
+                                                  value=1, size=sys.getsizeof(element[value]))
+
+                # auth_approle_role_ids
+                elif 'role_id' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'role_ids', 'role_ids',
+                                                  value=1, size=sys.getsizeof(element[value]))
+
+                # auth_approle_secret_ids
+                elif 'secret_id' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'secret_ids', 'secret_ids',
+                                                  value=1, size=sys.getsizeof(element[value]))
+
+                # auth_approle_roles
+                elif 'role' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'approles', 'approles',
+                                                  value=1, size=sys.getsizeof(element[value]))
+
+                elif path[3] in ['config', 'salt']:
+                    # already counted
+                    pass
+
+                else:
+                    # auth_approle_unknown_objects
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                                  'unknown_objects', 'unknown objects', value=1,
+                                                  size=sys.getsizeof(element[value]))
+                    # for debug
+                    print(authbackends[path[2]]['name'], path)
+            # TODO: token can't find if it can be stored in to <auth>
+            elif 'token' == authbackends[path[2]]['type']:
+                # auth_token_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
+                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
             else:
-                if '/group/' in element[field]:
-                    update_statistics('group', element[value])
-                if '/role_id/' in element[field]:
-                    update_statistics('approle_id', element[value])
-                if '/role/' in element[field]:
-                    update_statistics('approle', element[value])
-                if '/secret_id/' in element[field]:
-                    update_statistics('secret_id', element[value])
-                if '/user/' in element[field]:
-                    update_statistics('userpass_user', element[value])
-        if '/core/' in element[field]:
-            pass
-        if '/logical/' in element[field]:
-            update_statistics('secret', element[value])
-        if '/sys/' in element[field]:
-            if '/token/' in element[field]:
-                if '/id/' in element[field]:
-                    update_statistics('token', element[value])
-                if '/accessor/' in element[field]:
-                    update_statistics('token_accessor', element[value])
-            if '/policy/' in element[field]:
-                update_statistics('policy', element[value])
-            if '/expire/' in element[field]:
-                if '/approle/' in element[field]:
-                    update_statistics('approle_expire', element[value])
-                if '/ldap/' in element[field]:
-                    update_statistics('ldap_expire', element[value])
-                if '/token/' in element[field]:
-                    update_statistics('token_expire', element[value])
-                if '/userpass/' in element[field]:
-                    update_statistics('userpass_user_expire', element[value])
+                # auth_unknown_objects
+                prom_metrics = update_metrics(prom_metrics, path[1], 'unknown_objects', 'unknown objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+                # for debug
+                print(authbackends[path[2]]['name'], path)
+
+        elif 'logical' == path[1]:
+            # logical_objects
+            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
+                                          size=sys.getsizeof(element[value]))
+
+            if 'cubbyhole' == secretsengines[path[2]]['type']:
+                # logical_cubbyhole_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+            elif 'identity' == secretsengines[path[2]]['type']:
+                # logical_identity_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+            elif 'kv' == secretsengines[path[2]]['type']:
+                # KVv2 should have version field with value equal 2. If not set - KVv1
+                if 'version' in secretsengines[path[2]]['options']:
+                    if '2' == secretsengines[path[2]]['options']['version'] and len(path) > 4:
+                        # logical_<kv_name>_objects
+                        prom_metrics = update_metrics(prom_metrics,
+                                                      '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                      'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+                        # logical_<kv_name>_archive
+                        if 'archive' == path[4]:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                          path[4], 'objects',
+                                                          value=1, size=sys.getsizeof(element[value]))
+
+                        # logical_<kv_name>_policy
+                        elif 'policy' == path[4]:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                          path[4], 'objects',
+                                                          value=1, size=sys.getsizeof(element[value]))
+
+                        # logical_<kv_name>_secrets
+                        elif 'metadata' == path[4]:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                          'secrets', 'secrets',
+                                                          value=1, size=sys.getsizeof(element[value]))
+
+                        # logical_<kv_name>_versions
+                        elif 'versions' == path[4]:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                          'versions', 'versions',
+                                                          value=1, size=sys.getsizeof(element[value]))
+
+                        elif path[4] in ['config', 'salt', 'upgrading']:
+                            # already counted
+                            pass
+
+                        else:
+                            # logical_<kv_name>_unknown_objects
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                          'unknown_objects', 'unknown objects', value=1,
+                                                          size=sys.getsizeof(element[value]))
+                            # for debug
+                            print(secretsengines[path[2]]['name'], 'kvv2', path)
+                    else:
+                        # TODO: duplication
+                        # logical_<kv_name>_secrets
+                        prom_metrics = update_metrics(prom_metrics,
+                                                      '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                      'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+                        # logical_<kv_name>_secrets
+                        prom_metrics = update_metrics(prom_metrics,
+                                                      '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                      'secrets', 'secrets', value=1, size=sys.getsizeof(element[value]))
+                else:
+                    # logical_<kv_name>_secrets
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                  'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+                    # logical_<kv_name>_secrets
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                  'secrets', 'secrets', value=1, size=sys.getsizeof(element[value]))
+
+            elif 'transit' == secretsengines[path[2]]['type']:
+                # logical_<transit_name>_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+
+                # logical_<transit_name>_archive
+                if 'archive' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                  path[3], 'archives', value=1, size=sys.getsizeof(element[value]))
+
+                # logical_<transit_name>_policy
+                elif 'policy' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                  path[3], 'policies', value=1, size=sys.getsizeof(element[value]))
+
+                else:
+                    # logical_<transit_name>_unknown_objects
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                                  'unknown_objects', 'unknown objects', value=1,
+                                                  size=sys.getsizeof(element[value]))
+                    print(secretsengines[path[2]]['name'], path)
+            else:
+                # logical_unknown_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
+                                              'unknown_objects', 'unknown objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+                # for debug
+                print(secretsengines[path[2]]['name'], path)
+        elif 'sys' == path[1]:
+            # sys_objects
+            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
+                                          size=sys.getsizeof(element[value]))
+
+            if 'counters' == path[2]:
+                # sys_counters_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+
+            elif 'expire' == path[2]:
+                # sys_expire_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+
+                # sys_expire_id
+                if 'id' == path[3]:
+                    # will not count. Probably unnecessary statistic
+
+                    if 'auth' == path[4]:
+                        # sys_expire_<path[4]>_<path[5]>_<path[6]>
+                        # sys_expire_auth_<auth_backend>_{login|renew-self}
+                        if 'login' == path[6]:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], path[2], path[4], path[5])), 'logins',
+                                                          'logins', value=1, size=sys.getsizeof(element[value]))
+
+                        elif 'renew-self' == path[6]:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], path[2], path[4], path[5])),
+                                                          'tokens_renewed', 'tokens renewed', value=1,
+                                                          size=sys.getsizeof(element[value]))
+
+                        else:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], path[2], path[4])), 'unknown_objects',
+                                                          'unknown objects', value=1,
+                                                          size=sys.getsizeof(element[value]))
+                            # for debug
+                            print(path[4], path[6], path)
+
+                    elif 'sys' == path[4]:
+                        # sys_expire_wrapped_objects
+                        if 'wrap' == path[6]:
+                            prom_metrics = update_metrics(prom_metrics,
+                                                          '_'.join((path[1], path[2])), 'wrapped_objects',
+                                                          '_'.join(('wrapped', 'objects')), value=1,
+                                                          size=sys.getsizeof(element[value]))
+
+                    elif path[4] in ['config', 'salt', 'upgrading']:
+                        # already counted
+                        pass
+
+                    else:
+                        # sys_expire_unknown_objects
+                        prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])),
+                                                      'unknown_objects', 'unknown objects', value=1,
+                                                      size=sys.getsizeof(element[value]))
+                        # for debug
+                        print(path[2], path)
+
+            elif 'policy' == path[2]:
+                # sys_policy_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+
+            elif 'token' == path[2]:
+                # sys_token_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+
+                # sys_token_accessors
+                if 'accessor' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'accessors', 'accessors',
+                                                  value=1, size=sys.getsizeof(element[value]))
+
+                # sys_token_ids
+                elif 'id' == path[3]:
+                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'ids', 'ids',
+                                                  value=1, size=sys.getsizeof(element[value]))
+
+            elif 'config' == path[2]:
+                # sys_config_objects
+                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+
+            else:
+                # sys_unknown_objects
+                prom_metrics = update_metrics(prom_metrics, path[1], 'unknown_objects', 'unknown objects', value=1,
+                                              size=sys.getsizeof(element[value]))
+                print(path[2], path)
+        else:
+            # <unknown_branch>_unknown_objects
+            prom_metrics = update_metrics(prom_metrics, path[1], 'unknown_objects', 'unknown objects', value=1,
+                                          size=sys.getsizeof(element[value]))
+            print(path[1], path)
 
         element = search_for_dict()
 
-    return statistics, buffer, items_count
+    return prom_metrics, buffer
 
 
-def pretty(d, indent=0):
-    for key, value in d.items():
-        print('\t' * indent + str(key))
-        if isinstance(value, dict):
-            pretty(value, indent + 1)
-        else:
-            print('\t' * (indent + 1) + str(value))
+def convert_hvac_dict(response_dict):
+    processed_dict = {}
+    for item in response_dict['data'].keys():
+        processed_dict[response_dict[item]['uuid']] = response_dict[item]
+        processed_dict[response_dict[item]['uuid']]['name'] = item.strip('/')
+        del processed_dict[response_dict[item]['uuid']]['uuid']
 
-
-def push_metrics(stats):
-    registry = CollectorRegistry()
-
-    token_count = Gauge('token_count', 'Number of tokens found in a backup', registry=registry)
-    # token_count.labels(env='local', group='vault')
-    token_count.set(stats['token_count'])
-    token_size = Gauge('token_size', 'Size of encrypted tokens found in a backup', registry=registry)
-    # token_size.labels(env='local', group='vault')
-    token_size.set(stats['token_size'])
-
-    token_accessor_count = Gauge('token_accessor_count', 'Number of token accessors found in a backup', registry=registry)
-    # token_accessor_count.labels(env='local', group='vault')
-    token_accessor_count.set(stats['token_accessor_count'])
-    token_accessor_size = Gauge('token_accessor_size', 'Size of encrypted token accessors found in a backup', registry=registry)
-    # token_accessor_size.labels(env='local', group='vault')
-    token_accessor_size.set(stats['token_accessor_size'])
-
-    policy_count = Gauge('policy_count', 'Number of policies found in a backup', registry=registry)
-    # policy_count.labels(env='local', group='vault')
-    policy_count.set(stats['policy_count'])
-    policy_size = Gauge('policy_size', 'Size of encrypted policies found in a backup', registry=registry)
-    # policy_size.labels(env='local', group='vault')
-    policy_size.set(stats['policy_size'])
-
-    secret_count = Gauge('secret_count', 'Number of secrets found in a backup', registry=registry)
-    # secret_count.labels(env='local', group='vault')
-    secret_count.set(stats['secret_count'])
-    secret_size = Gauge('secret_size', 'Size of encrypted secrets found in a backup', registry=registry)
-    # secret_size.labels(env='local', group='vault')
-    secret_size.set(stats['secret_size'])
-
-    group_count = Gauge('group_count', 'Number of groups found in a backup', registry=registry)
-    # group_count.labels(env='local', group='vault')
-    group_count.set(stats['group_count'])
-    group_size = Gauge('group_size', 'Size of encrypted groups found in a backup', registry=registry)
-    # group_size.labels(env='local', group='vault')
-    group_size.set(stats['group_size'])
-
-    approle_id_count = Gauge('approle_id_count', 'Number of approle_ids found in a backup', registry=registry)
-    # approle_id_count.labels(env='local', group='vault')
-    approle_id_count.set(stats['approle_id_count'])
-    approle_id_size = Gauge('approle_id_size', 'Size of encrypted approle_ids found in a backup', registry=registry)
-    # approle_id_size.labels(env='local', group='vault')
-    approle_id_size.set(stats['approle_id_size'])
-
-    approle_count = Gauge('approle_count', 'Number of approles found in a backup', registry=registry)
-    # approle_count.labels(env='local', approle_='vault')
-    approle_count.set(stats['approle_count'])
-    approle_size = Gauge('approle_size', 'Size of encrypted approles found in a backup', registry=registry)
-    # approle_size.labels(env='local', approle_='vault')
-    approle_size.set(stats['approle_size'])
-
-    secret_id_count = Gauge('secret_id_count', 'Number of secret_ids found in a backup', registry=registry)
-    # secret_id_count.labels(env='local', group='vault')
-    secret_id_count.set(stats['secret_id_count'])
-    secret_id_size = Gauge('secret_id_size', 'Size of encrypted secret_ids found in a backup', registry=registry)
-    # secret_id_size.labels(env='local', group='vault')
-    secret_id_size.set(stats['secret_id_size'])
-
-    userpass_user_count = Gauge('userpass_user_count', 'Number of userpass users found in a backup', registry=registry)
-    # userpass_user_count.labels(env='local', group='vault')
-    userpass_user_count.set(stats['userpass_user_count'])
-    userpass_user_size = Gauge('userpass_user_size', 'Size of encrypted userpass users found in a backup',
-                               registry=registry)
-    # userpass_user_size.labels(env='local', group='vault')
-    userpass_user_size.set(stats['userpass_user_size'])
-
-    approle_expire_count = Gauge('approle_expire_count', 'Number of approle_expires found in a backup',
-                                 registry=registry)
-    # approle_expire_count.labels(env='local', group='vault')
-    approle_expire_count.set(stats['approle_expire_count'])
-    approle_expire_size = Gauge('approle_expire_size', 'Size of encrypted approle_expires found in a backup',
-                                registry=registry)
-    # approle_expire_size.labels(env='local', group='vault')
-    approle_expire_size.set(stats['approle_expire_size'])
-
-    ldap_expire_count = Gauge('ldap_expire_count', 'Number of ldap_expires found in a backup', registry=registry)
-    # ldap_expire_count.labels(env='local', group='vault')
-    ldap_expire_count.set(stats['ldap_expire_count'])
-    ldap_expire_size = Gauge('ldap_expire_size', 'Size of encrypted ldap_expires found in a backup', registry=registry)
-    # ldap_expire_size.labels(env='local', group='vault')
-    ldap_expire_size.set(stats['ldap_expire_size'])
-
-    token_expire_count = Gauge('token_expire_count', 'Number of token_expires found in a backup', registry=registry)
-    # token_expire_count.labels(env='local', group='vault')
-    token_expire_count.set(stats['token_expire_count'])
-    token_expire_size = Gauge('token_expire_size', 'Size of encrypted token_expires found in a backup',
-                              registry=registry)
-    # token_expire_size.labels(env='local', group='vault')
-    token_expire_size.set(stats['token_expire_size'])
-
-    userpass_user_expire_count = Gauge('userpass_user_expire_count', 'Number of userpass_user_expire found in a backup',
-                                       registry=registry)
-    # userpass_user_expire_count.labels(env='local', group='vault')
-    userpass_user_expire_count.set(stats['userpass_user_expire_count'])
-    userpass_user_expire_size = Gauge('userpass_user_expire_size',
-                                      'Size of encrypted userpass_user_expire found in a backup', registry=registry)
-    # userpass_user_expire_size.labels(env='local', group='vault')
-    userpass_user_expire_size.set(stats['userpass_user_expire_size'])
-
-    push_to_gateway('localhost:9091', job='vault_backup_analyzer', registry=registry)
+    return processed_dict
 
 
 if __name__ == "__main__":
-    backup_files = []
+    # TODO: args should be parsed in separated function
+    BACKUP_FNAME = sys.argv[1]
+    # TODO: variability:
+    #    Should script push metrics to pushgateway or
+    #      * start it's own web server
+    #      * just output metrics to log
+    PUSHGATEWAY_ADDR = sys.argv[2]
+    LABELS = sys.argv[3]
+    # TODO: variability:
+    #  WIth query to vault and without
+    #  Use vault agent for get and store token to file
+    #  If we don't want convert UUIDs to human readable values
+    #  Also It is possible that script will read data with unknown IDs
+    VAULT_ADDR = sys.argv[4]
+    VAULT_ROLE_ID = sys.argv[5]
+    VAULT_SECRET_ID = sys.argv[6]
 
-    for file in os.listdir("."):
-        if file.endswith(".json") or file.endswith(".snap"):
-            backup_files.append(os.path.join(".", file))
+    labels = LABELS.split(',')
+    label_names = []
+    label_values = []
 
-    total_stat = []
+    for label in labels:
+        label_name, label_value = label.split('=')
+        label_names.append(label_name)
+        label_values.append(label_value)
 
-    for f_name in backup_files:
-        total_stat.append(process_backup(f_name))
+    vault_client = hvac.Client(url=VAULT_ADDR, verify=True)
+    vault_token = vault_client.auth_approle(VAULT_ROLE_ID, VAULT_SECRET_ID)
 
-    for tot_id in range(len(total_stat)):
-        pretty(total_stat[tot_id])
+    auth_backends = convert_hvac_dict(vault_client.sys.list_auth_methods())
+    secrets_engines = convert_hvac_dict(vault_client.sys.list_mounted_secrets_engines())
 
-    push_metrics(total_stat[0])
+    prom_registry = CollectorRegistry()
+    metrics = Metrics(registry=prom_registry, pushgateway_addr=PUSHGATEWAY_ADDR, labelnames=label_names,
+                      labelvalues=label_values)
+
+    for auth_backend in auth_backends:
+        metrics = update_metrics(metrics, '_'.join(('auth', auth_backends[auth_backend]['name'])),
+                                 'objects', value=0, size=0)
+
+    metrics = process_backup(BACKUP_FNAME, metrics, auth_backends, secrets_engines)
+
+    metrics.push_metrics()
