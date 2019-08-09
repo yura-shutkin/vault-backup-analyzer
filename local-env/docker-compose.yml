@@ -1,0 +1,43 @@
+---
+version: '2.3'
+
+x-logging-json: &logging-json
+  logging:
+    driver: json-file
+    options:
+      max-file: "1"
+      max-size: "50M"
+
+services:
+  pushgateway:
+    <<: *logging-json
+    image: ${DOCKER_REGISTRY}prom/pushgateway:${PUSHGATEWAY_VERSION:-v0.9.1}
+    ports:
+      - "${PUSHGATEWAY_BOUND_ADDR}:${PUSHGATEWAY_PORT}:9091"
+
+  vault:
+    <<: *logging-json
+    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}vault:${VAULT_VERSION:-1.2.0}
+    ports:
+      - "${VAULT_BOUND_ADDR}:${VAULT_PORT:-8200}:8200"
+    volumes:
+      - "./vault.hcl:/vault/config/config.hcl:ro"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID}
+    depends_on:
+      consul:
+        condition: service_healthy
+
+  consul:
+    <<: *logging-json
+    image: ${DOCKER_REGISTRY}${REGISTRY_COMMON_STORAGE}consul:${CONSUL_VERSION:-1.5.3}
+    ports:
+      - "${CONSUL_BOUND_ADDR}:${CONSUL_PORT:-8500}:8500"
+    volumes:
+      - "./consul.hcl:/consul/config/config.hcl:ro"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:8500/v1/status/leader"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
