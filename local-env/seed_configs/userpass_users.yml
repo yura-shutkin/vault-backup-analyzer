@@ -1,0 +1,29 @@
+---
+seed_userpass:
+  - username: jester
+    password: 12345
+    policies:
+      - default
+      - secret-full
+    mount_point: userpass
+
+  - username: fester
+    password: 12345
+    policies:
+      - default
+      - simple-full
+    mount_point: userpass
+
+  - username: tester
+    password: 12345
+    policies:
+      - default
+      - transit-full
+    mount_point: userpass
+
+  - username: jester
+    password: 12345
+    policies:
+      - default
+      - secret-full
+    mount_point: project

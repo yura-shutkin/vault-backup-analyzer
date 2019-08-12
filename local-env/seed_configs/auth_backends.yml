@@ -1,0 +1,33 @@
+---
+seed_auth_backends:
+  - method_type: approle
+    path: approle
+    config:
+      listing-visibility: ''
+      default_lease_ttl: 30s
+      max_lease_ttl: 24h
+      description: common approle auth backend
+
+  - method_type: approle
+    path: project-approle
+    config:
+      listing-visibility: ''
+      default_lease_ttl: 30s
+      max_lease_ttl: 24h
+      description: Project specified approle auth backend
+
+  - method_type: userpass
+    path: userpass
+    config:
+      listing-visibility: unauth
+      default_lease_ttl: 30m
+      max_lease_ttl: 24h
+      description: Common userpass auth backend
+
+  - method_type: userpass
+    path: project
+    config:
+      listing-visibility: unauth
+      default_lease_ttl: 30m
+      max_lease_ttl: 24h
+      description: Main project's auth backend

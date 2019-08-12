@@ -1,0 +1,19 @@
+---
+seed_policies:
+  - name: secret-full
+    policy: |
+      path "secret/*" {
+        capabilities = ["list", "read", "update", "create", "delete"]
+      }
+
+  - name: simple-full
+    policy: |
+      path "simple/*" {
+        capabilities = ["list", "read", "update", "create", "delete"]
+      }
+
+  - name: transit-full
+    policy: |
+      path "transit/*" {
+        capabilities = ["list", "read", "update", "create", "delete"]
+      }
