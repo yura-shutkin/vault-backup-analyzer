@@ -40,6 +40,18 @@ def create_approles(session, approles):
             )
 
 
+def mount_secrets_engines(session, secrets_engines):
+    for top_key in secrets_engines:
+        for idx in range(len(secrets_engines[top_key])):
+            session.sys.enable_secrets_engine(
+                backend_type=secrets_engines[top_key][idx]['backend_type'],
+                path=secrets_engines[top_key][idx]['mount_point'],
+                description=secrets_engines[top_key][idx]['description'],
+                config=secrets_engines[top_key][idx]['params'],
+                options=secrets_engines[top_key][idx]['options']
+            )
+
+
 def open_yaml(path):
     with open(path, 'r') as auth_backends_file:
         result = yaml.load(auth_backends_file.read(), Loader=yaml.Loader)
@@ -53,6 +65,7 @@ if __name__ == '__main__':
     POLICIES = open_yaml('seed_configs/policies.yml')
     USERPASS_USERS = open_yaml('seed_configs/userpass_users.yml')
     APPROLES = open_yaml('seed_configs/approles.yml')
+    SECRETS_ENGINES = open_yaml('seed_configs/secrets_engines.yml')
 
     ROOT_SESSION = hvac.Client(url=VAULT_ADDR, token=ROOT_TOKEN)
 
@@ -60,3 +73,4 @@ if __name__ == '__main__':
     create_policies(ROOT_SESSION, POLICIES)
     create_userpass_users(ROOT_SESSION, USERPASS_USERS)
     create_approles(ROOT_SESSION, APPROLES)
+    mount_secrets_engines(ROOT_SESSION, SECRETS_ENGINES)
