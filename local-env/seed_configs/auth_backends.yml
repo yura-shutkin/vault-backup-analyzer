@@ -1,7 +1,7 @@
 ---
 seed_auth_backends:
   - method_type: approle
-    path: approle
+    mount_point: approle
     config:
       listing-visibility: ''
       default_lease_ttl: 30s
@@ -9,7 +9,7 @@ seed_auth_backends:
       description: common approle auth backend
 
   - method_type: approle
-    path: project-approle
+    mount_point: project-approle
     config:
       listing-visibility: ''
       default_lease_ttl: 30s
@@ -17,7 +17,7 @@ seed_auth_backends:
       description: Project specified approle auth backend
 
   - method_type: userpass
-    path: userpass
+    mount_point: userpass
     config:
       listing-visibility: unauth
       default_lease_ttl: 30m
@@ -25,7 +25,7 @@ seed_auth_backends:
       description: Common userpass auth backend
 
   - method_type: userpass
-    path: project
+    mount_point: project
     config:
       listing-visibility: unauth
       default_lease_ttl: 30m

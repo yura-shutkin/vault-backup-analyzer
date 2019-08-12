@@ -17,3 +17,15 @@ seed_policies:
       path "transit/*" {
         capabilities = ["list", "read", "update", "create", "delete"]
       }
+
+  - name: list-auth-backends
+    policy: |
+      path "sys/auth" {
+        capabilities = ["read"]
+      }
+
+  - name: list-mounted-secrets-engines
+    policy: |
+      path "sys/mounts" {
+        capabilities = ["read"]
+      }
