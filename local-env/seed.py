@@ -72,6 +72,17 @@ def write_kv2_secrets(session, mount_point, secrets):
             )
 
 
+def create_transit_keys(session, transit_keys):
+    for top_key in transit_keys:
+        for idx in range(len(transit_keys[top_key])):
+            session.secrets.transit.create_key(
+                name=transit_keys[top_key][idx]['name'],
+                allow_plaintext_backup=transit_keys[top_key][idx]['allow_plaintext_backup'],
+                key_type=transit_keys[top_key][idx]['key_type'],
+                mount_point=transit_keys[top_key][idx]['mount_point']
+            )
+
+
 def open_yaml(path):
     with open(path, 'r') as auth_backends_file:
         result = yaml.load(auth_backends_file.read(), Loader=yaml.Loader)
@@ -87,6 +98,7 @@ if __name__ == '__main__':
     APPROLES = open_yaml('seed_configs/approles.yml')
     SECRETS_ENGINES = open_yaml('seed_configs/secrets_engines.yml')
     SECRETS = open_yaml('seed_configs/secrets.yml')
+    TRANSIT_KEYS = open_yaml('seed_configs/transit_keys.yml')
 
     ROOT_SESSION = hvac.Client(url=VAULT_ADDR, token=ROOT_TOKEN)
 
@@ -98,3 +110,6 @@ if __name__ == '__main__':
 
     write_kv1_secrets(ROOT_SESSION, 'simple', SECRETS)
     write_kv2_secrets(ROOT_SESSION, 'secret', SECRETS)
+    create_transit_keys(ROOT_SESSION, TRANSIT_KEYS)
+
+    ROOT_SESSION.secrets.transit.rotate_key(name='super-secret', mount_point='transit')

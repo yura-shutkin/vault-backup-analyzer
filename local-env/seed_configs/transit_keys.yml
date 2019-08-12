@@ -1,0 +1,11 @@
+---
+seed_transit_keys:
+  - name: super-secret
+    key_type: rsa-4096
+    allow_plaintext_backup: true
+    mount_point: transit
+
+  - name: super-secret-too
+    key_type: aes256-gcm96
+    allow_plaintext_backup: false
+    mount_point: transit
