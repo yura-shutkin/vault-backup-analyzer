@@ -52,6 +52,26 @@ def mount_secrets_engines(session, secrets_engines):
             )
 
 
+def write_kv1_secrets(session, mount_point, secrets):
+    for top_key in secrets:
+        for idx in range(len(secrets[top_key])):
+            session.secrets.kv.v1.create_or_update_secret(
+                path=secrets[top_key][idx]['path'],
+                secret=secrets[top_key][idx]['data'],
+                mount_point=mount_point
+            )
+
+
+def write_kv2_secrets(session, mount_point, secrets):
+    for top_key in secrets:
+        for idx in range(len(secrets[top_key])):
+            session.secrets.kv.v2.create_or_update_secret(
+                path=secrets[top_key][idx]['path'],
+                secret=secrets[top_key][idx]['data'],
+                mount_point=mount_point
+            )
+
+
 def open_yaml(path):
     with open(path, 'r') as auth_backends_file:
         result = yaml.load(auth_backends_file.read(), Loader=yaml.Loader)
@@ -66,6 +86,7 @@ if __name__ == '__main__':
     USERPASS_USERS = open_yaml('seed_configs/userpass_users.yml')
     APPROLES = open_yaml('seed_configs/approles.yml')
     SECRETS_ENGINES = open_yaml('seed_configs/secrets_engines.yml')
+    SECRETS = open_yaml('seed_configs/secrets.yml')
 
     ROOT_SESSION = hvac.Client(url=VAULT_ADDR, token=ROOT_TOKEN)
 
@@ -74,3 +95,6 @@ if __name__ == '__main__':
     create_userpass_users(ROOT_SESSION, USERPASS_USERS)
     create_approles(ROOT_SESSION, APPROLES)
     mount_secrets_engines(ROOT_SESSION, SECRETS_ENGINES)
+
+    write_kv1_secrets(ROOT_SESSION, 'simple', SECRETS)
+    write_kv2_secrets(ROOT_SESSION, 'secret', SECRETS)
