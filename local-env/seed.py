@@ -1,5 +1,6 @@
 import hvac
 import yaml
+import json
 
 
 def enable_auth_backends(session, backends):
@@ -36,7 +37,7 @@ def create_approles(session, approles):
             session.create_role(
                 role_name=approles[top_key][idx]['name'],
                 mount_point=approles[top_key][idx]['mount_point'],
-                param=approles[top_key][idx]['params']
+                **approles[top_key][idx]['params']
             )
 
 
@@ -113,3 +114,14 @@ if __name__ == '__main__':
     create_transit_keys(ROOT_SESSION, TRANSIT_KEYS)
 
     ROOT_SESSION.secrets.transit.rotate_key(name='super-secret', mount_point='transit')
+
+    ROOT_SESSION.auth_userpass(username='jester', password='12345', mount_point='project', use_token=False)
+    ROOT_SESSION.auth_userpass(username='jester', password='12345', mount_point='project', use_token=False)
+    ROOT_SESSION.auth_userpass(username='fester', password='12345', mount_point='userpass', use_token=False)
+
+    role_id = ROOT_SESSION.get_role_id(role_name='backup-analyzer', mount_point='approle')
+    secret_id = ROOT_SESSION.create_role_secret_id(role_name='backup-analyzer', mount_point='approle')
+    # Create another secret_id
+    ROOT_SESSION.create_role_secret_id(role_name='backup-analyzer', mount_point='approle')
+    with open('creds.json', 'w') as creds_file:
+        creds_file.write(json.dumps({'role_id': role_id, 'secret_id': secret_id['data']['secret_id']}))
