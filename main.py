@@ -473,8 +473,7 @@ if __name__ == "__main__":
     #  If we don't want convert UUIDs to human readable values
     #  Also It is possible that script will read data with unknown IDs
     VAULT_ADDR = sys.argv[4]
-    VAULT_ROLE_ID = sys.argv[5]
-    VAULT_SECRET_ID = sys.argv[6]
+    VAULT_CREDS_FILE = sys.argv[5]
 
     labels = LABELS.split(',')
     label_names = []
@@ -484,6 +483,12 @@ if __name__ == "__main__":
         label_name, label_value = label.split('=')
         label_names.append(label_name)
         label_values.append(label_value)
+
+    with open(VAULT_CREDS_FILE, 'r') as creds_file:
+        creds = json.loads(creds_file.read())
+
+    VAULT_ROLE_ID = creds['role_id']
+    VAULT_SECRET_ID = creds['secret_id']
 
     vault_client = hvac.Client(url=VAULT_ADDR, verify=True)
     vault_token = vault_client.auth_approle(VAULT_ROLE_ID, VAULT_SECRET_ID)
