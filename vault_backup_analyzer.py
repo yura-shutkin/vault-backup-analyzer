@@ -6,6 +6,131 @@ import socket
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
 
+class IMetric():
+    def can_process(self):
+        raise NotImplementedError()
+
+    def update_metrics(self):
+        raise NotImplementedError()
+
+
+class StubMetric(IMetric):
+    def can_process(self, path):
+        return True
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class Audit(IMetric):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class Auth(IMetric):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class Secret(IMetric):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class IProcessor():
+    def can_process(self):
+        raise NotImplementedError()
+
+    def update_metrics(self):
+        raise NotImplementedError()
+
+
+class StubProcessor(IProcessor):
+    def can_process(self):
+        return True
+
+    def update_metrics(self):
+        ...
+
+
+# Secrets processors
+class KVProcessor(IProcessor):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class TransitProcessor(IProcessor):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class CubbyholeProcessor(IProcessor):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class IdentityProcessor(IProcessor):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+# Auth backends processors
+class LdapProcessor(IProcessor):
+    def can_process(self, path):
+        return path == 'ldap'
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class UserpassProcessor(IProcessor):
+    def can_process(self, path):
+        return path == 'userpass'
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class ApproleProcessor(IProcessor):
+    def can_process(self, path):
+        return path == 'approle'
+
+    def update_metrics(self, path, value):
+        ...
+
+
+class TokenProcessor(IProcessor):
+    def can_process(self, path):
+        ...
+
+    def update_metrics(self, path, value):
+        ...
+
+
+##############################################################################
+
+
 class Metrics:
     def __init__(self, registry, pushgateway_addr, labelnames, labelvalues):
         self.registry = registry
