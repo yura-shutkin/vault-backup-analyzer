@@ -16,6 +16,7 @@ up: ## Start project
 .PHONY: down
 down: ## Stop project and cleanup with volumes
 	@cd local-env && docker-compose down -v
+	@find ./ -name '*.json' -delete
 
 .PHONY: seed
 seed: ## Seed local env
