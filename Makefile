@@ -20,6 +20,10 @@ down: ## Stop project and cleanup with volumes
 .PHONY: seed
 seed: ## Seed local env
 	@cd local-env && python seed.py
+	@$(MAKE) kv-backup
+
+.PHONY: kv-backup
+kv-backup: ## Backup KV
 	@cd local-env && consul kv export -http-addr=http://localhost:8500 vault > vault.local.json
 
 .PHONY: analyze-local
