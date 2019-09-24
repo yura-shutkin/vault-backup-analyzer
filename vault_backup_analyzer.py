@@ -6,150 +6,20 @@ import socket
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
 
-class IMetric():
-    def can_process(self):
-        raise NotImplementedError()
-
-    def update_metrics(self):
-        raise NotImplementedError()
-
-
-class StubMetric(IMetric):
-    def can_process(self, path):
-        return True
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class Audit(IMetric):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class Auth(IMetric):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class Secret(IMetric):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class IProcessor():
-    def can_process(self):
-        raise NotImplementedError()
-
-    def update_metrics(self):
-        raise NotImplementedError()
-
-
-class StubProcessor(IProcessor):
-    def can_process(self):
-        return True
-
-    def update_metrics(self):
-        ...
-
-
-# Secrets processors
-class KVProcessor(IProcessor):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class TransitProcessor(IProcessor):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class CubbyholeProcessor(IProcessor):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class IdentityProcessor(IProcessor):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-# Auth backends processors
-class LdapProcessor(IProcessor):
-    def can_process(self, path):
-        return path == 'ldap'
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class UserpassProcessor(IProcessor):
-    def can_process(self, path):
-        return path == 'userpass'
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class ApproleProcessor(IProcessor):
-    def can_process(self, path):
-        return path == 'approle'
-
-    def update_metrics(self, path, value):
-        ...
-
-
-class TokenProcessor(IProcessor):
-    def can_process(self, path):
-        ...
-
-    def update_metrics(self, path, value):
-        ...
-
-
-##############################################################################
-
-
 class Metrics:
     def __init__(self, registry, pushgateway_addr, labelnames, labelvalues):
         self.registry = registry
         self.pushgateway_addr = pushgateway_addr
         self.grouping_key = dict(zip(labelnames, labelvalues))
         self.grouping_key['instance'] = socket.gethostname()
-        self.metrics = {
-            'total_metrics': Gauge('total_metrics', 'Metrics total from vault backup', registry=self.registry)}
-        self.metrics['total_metrics'].set(1)
+        self.metrics = {}
 
-    def inc(self, metric_name, metric_description, metric_value=1, metric_type='gauge'):
+    def create_metric(self, metric_name, description, labelnames):
         if metric_name not in self.metrics:
-            if 'gauge' == metric_type:
-                self.metrics[metric_name] = Gauge(metric_name, metric_description, registry=self.registry)
-                self.metrics[metric_name].set(metric_value)
-                self.metrics['total_metrics'].inc()
-        else:
-            if isinstance(self.metrics[metric_name], Gauge):
-                self.metrics[metric_name].inc(metric_value)
+            self.metrics[metric_name] = Gauge(metric_name, description, labelnames=labelnames, registry=self.registry)
+
+    def inc(self, metric_name, metric_labels, metric_value=1):
+        self.metrics[metric_name].labels(*metric_labels).inc(metric_value)
 
     def push_metrics(self):
         push_to_gateway(self.pushgateway_addr, job='vault_backup_analyzer',
@@ -166,49 +36,27 @@ def read_in_chunks(file_object, chunk_size=1024):
         yield data
 
 
-def process_backup(backup_file_name, metrics, auth_backends, secrets_engines):
+def find_uuid_auth_backend(auth_backs, auth_type):
+    for key in auth_backs.keys():
+        if auth_backs[key]['type'] == auth_type:
+            return key
+    return None
+
+
+def process_backup(backup_file_name, prom_metrics, auth_backs, secrets_engs):
     buffer = ""
 
     with open(backup_file_name, 'r') as backup_file:
         for piece in read_in_chunks(backup_file):
-            metrics, buffer = process_element(metrics, buffer + piece, auth_backends, secrets_engines)
-    return metrics
+            prom_metrics, buffer = process_element(prom_metrics, buffer + piece, auth_backs, secrets_engs)
+    return prom_metrics
 
 
-def update_metrics(metrics_pool, prefix, name, m_type='objects', value=1, size=0):
-    def inc_metric(postfix, val):
-        # <prefix>_<name>_count
-        # <prefix>_<name>_size
-        # auth_approle_count
-        # auth_approle_size
-        # auth_approle_secret_id_count
-        # auth_approle_secret_size
-        # secrets_kv-project_count
-        # secrets_kv-project_size
-        # secrets_kv-project_secrets_count
-        # secrets_kv-project_secrets_size
-        # secrets_kv-project_versions_count
-        # secrets_kv-project_versions_size
-        # audit_devices_count
-        # audit_devices_size
-        m_name = '_'.join((prefix, name, postfix))
-        # Ensure all dashes replased with ground
-        m_name = m_name.replace('-', '_')
-        # Ensure all slashes replased with ground
-        m_name = m_name.replace('/', '_')
-
-        metrics_pool.inc(m_name, description, val)
-
-    # Total <m_type> count in <name>
-    # Total size of <m_type> in <name>
-    # Total versions count in project_1234_secrets
-    # Total objects count in core
-    # Total roles count in auth_kubernetes
-    description = 'Total {} count in {}'.format(m_type, name)
-    inc_metric('count', value)
-
-    description = 'Total size of {} in {}'.format(m_type, name)
-    inc_metric('size', size)
+def update_metrics(metrics_pool, m_name, m_labels, value=1, size=0):
+    name = '_'.join([m_name, 'count'])
+    metrics_pool.inc(name, m_labels, value)
+    name = '_'.join([m_name, 'size'])
+    metrics_pool.inc(name, m_labels, size)
 
     return metrics_pool
 
@@ -247,326 +95,243 @@ def process_element(prom_metrics, buffer, authbackends, secretsengines):
 
         path = element[field].split('/')
 
-        # objects_total_devices
-        prom_metrics = update_metrics(prom_metrics, 'objects', 'total', 'objects', value=1,
-                                      size=sys.getsizeof(element[value]))
-
         if 'audit' == path[1]:
             # audit_devices
-            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'devices', value=1,
+            prom_metrics = update_metrics(prom_metrics, m_name='vba_system_objects', m_labels=['audit_device'], value=1,
                                           size=sys.getsizeof(element[value]))
         elif 'core' == path[1]:
             # core_objects
-            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
+            prom_metrics = update_metrics(prom_metrics, m_name='vba_system_objects', m_labels=['core'], value=1,
                                           size=sys.getsizeof(element[value]))
         elif 'auth' == path[1]:
-            # auth_objects
-            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
+            # auth_backend_objects
+            prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_objects',
+                                          m_labels=[authbackends[path[2]]['type'],
+                                                    authbackends[path[2]]['name']], value=1,
                                           size=sys.getsizeof(element[value]))
 
             if 'userpass' == authbackends[path[2]]['type']:
-                # auth_<auth_backend>_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
-
                 if 'user' == path[3]:
-                    # auth_userpass_users
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'users', 'users', value=1, size=sys.getsizeof(element[value]))
-
-                else:
-                    # auth_userpass_unknown_objects
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'unknown_objects', 'unknown objects', value=1,
+                    # auth_backend_users
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_users',
+                                                  m_labels=[authbackends[path[2]]['type'],
+                                                            authbackends[path[2]]['name']], value=1,
                                                   size=sys.getsizeof(element[value]))
-                    # for debug
-                    print(authbackends[path[2]]['name'], path)
 
             elif 'ldap' == authbackends[path[2]]['type']:
-                # auth_ldap_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
-
                 if 'user' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  path[3], value=1, size=sys.getsizeof(element[value]))
+                    # auth_backend_users
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_users',
+                                                  m_labels=[authbackends[path[2]]['type'],
+                                                            authbackends[path[2]]['name']], value=1,
+                                                  size=sys.getsizeof(element[value]))
 
                 elif 'group' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  path[3], value=1, size=sys.getsizeof(element[value]))
-
-                elif path[3] in ['config', 'salt']:
-                    # already counted
-                    pass
-
-                else:
-                    # auth_ldap_unknown_objects
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'unknown_objects', 'unknown objects', value=1,
+                    # auth_backend_groups
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_groups',
+                                                  m_labels=[authbackends[path[2]]['type'],
+                                                            authbackends[path[2]]['name']], value=1,
                                                   size=sys.getsizeof(element[value]))
-                    # for debug
-                    print(authbackends[path[2]]['name'], path)
 
             elif 'approle' == authbackends[path[2]]['type']:
-                # auth_approle_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
-
-                # auth_approle_secret_id_accessors
+                # auth_backend_secret_ids_accessors
                 if 'accessor' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'secret_id_accessors', 'secret-id accessors',
-                                                  value=1, size=sys.getsizeof(element[value]))
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_secret_ids_accessors',
+                                                  m_labels=[authbackends[path[2]]['type'],
+                                                            authbackends[path[2]]['name']], value=1,
+                                                  size=sys.getsizeof(element[value]))
 
                 # auth_approle_role_ids
                 elif 'role_id' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'role_ids', 'role_ids',
-                                                  value=1, size=sys.getsizeof(element[value]))
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_role_ids',
+                                                  m_labels=[authbackends[path[2]]['type'],
+                                                            authbackends[path[2]]['name']], value=1,
+                                                  size=sys.getsizeof(element[value]))
 
                 # auth_approle_secret_ids
                 elif 'secret_id' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'secret_ids', 'secret_ids',
-                                                  value=1, size=sys.getsizeof(element[value]))
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_secret_ids',
+                                                  m_labels=[authbackends[path[2]]['type'],
+                                                            authbackends[path[2]]['name']], value=1,
+                                                  size=sys.getsizeof(element[value]))
 
                 # auth_approle_roles
                 elif 'role' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'approles', 'approles',
-                                                  value=1, size=sys.getsizeof(element[value]))
-
-                elif path[3] in ['config', 'salt']:
-                    # already counted
-                    pass
-
-                else:
-                    # auth_approle_unknown_objects
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                                  'unknown_objects', 'unknown objects', value=1,
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_roles',
+                                                  m_labels=[authbackends[path[2]]['type'],
+                                                            authbackends[path[2]]['name']], value=1,
                                                   size=sys.getsizeof(element[value]))
-                    # for debug
-                    print(authbackends[path[2]]['name'], path)
-            # TODO: token can't find if it can be stored in to <auth>
-            elif 'token' == authbackends[path[2]]['type']:
-                # auth_token_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], authbackends[path[2]]['name'])),
-                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
-            else:
-                # auth_unknown_objects
-                prom_metrics = update_metrics(prom_metrics, path[1], 'unknown_objects', 'unknown objects', value=1,
-                                              size=sys.getsizeof(element[value]))
-                # for debug
-                print(authbackends[path[2]]['name'], path)
 
         elif 'logical' == path[1]:
-            # logical_objects
-            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
-                                          size=sys.getsizeof(element[value]))
-
             if 'cubbyhole' == secretsengines[path[2]]['type']:
-                # logical_cubbyhole_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+                # auth_secrets_engine_objects
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_objects',
+                                              m_labels=[secretsengines[path[2]]['type'],
+                                                        secretsengines[path[2]]['name'], ''], value=1,
+                                              size=sys.getsizeof(element[value]))
+                # auth_secrets_engine_objects
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_secrets',
+                                              m_labels=[secretsengines[path[2]]['type'],
+                                                        secretsengines[path[2]]['name'], ''], value=1,
+                                              size=sys.getsizeof(element[value]))
 
             elif 'identity' == secretsengines[path[2]]['type']:
-                # logical_identity_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+                # auth_secrets_engine_objects
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_objects',
+                                              m_labels=[secretsengines[path[2]]['type'],
+                                                        secretsengines[path[2]]['name'], ''], value=1,
+                                              size=sys.getsizeof(element[value]))
+                # auth_secrets_engine_objects
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_secrets',
+                                              m_labels=[secretsengines[path[2]]['type'],
+                                                        secretsengines[path[2]]['name'], ''], value=1,
+                                              size=sys.getsizeof(element[value]))
 
             elif 'kv' == secretsengines[path[2]]['type']:
-                # KVv2 should have version field with value equal 2. If not set - KVv1
-                if 'version' in secretsengines[path[2]]['options']:
-                    if '2' == secretsengines[path[2]]['options']['version'] and len(path) > 4:
-                        # logical_<kv_name>_objects
-                        prom_metrics = update_metrics(prom_metrics,
-                                                      '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                      'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+                if 'options' in secretsengines[path[2]]:
+                    # KVv2 should have version field with value equal 2. If not set - KVv1
+                    if 'version' in secretsengines[path[2]]['options']:
+                        if '2' == secretsengines[path[2]]['options']['version'] and len(path) > 4:
+                            # auth_secrets_engine_objects
+                            prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_objects',
+                                                          m_labels=[secretsengines[path[2]]['type'],
+                                                                    secretsengines[path[2]]['name'], 2], value=1,
+                                                          size=sys.getsizeof(element[value]))
 
-                        # logical_<kv_name>_archive
-                        if 'archive' == path[4]:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                          path[4], 'objects',
-                                                          value=1, size=sys.getsizeof(element[value]))
+                            if 'metadata' == path[4]:
+                                # auth_secrets_engine_secrets
+                                prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_secrets',
+                                                              m_labels=[secretsengines[path[2]]['type'],
+                                                                        secretsengines[path[2]]['name'], 2], value=1,
+                                                              size=sys.getsizeof(element[value]))
 
-                        # logical_<kv_name>_policy
-                        elif 'policy' == path[4]:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                          path[4], 'objects',
-                                                          value=1, size=sys.getsizeof(element[value]))
+                            elif 'versions' == path[4]:
+                                # auth_secrets_engine_secrets_versions
+                                prom_metrics = update_metrics(prom_metrics,
+                                                              m_name='vba_secrets_engine_secrets_versions',
+                                                              m_labels=[secretsengines[path[2]]['type'],
+                                                                        secretsengines[path[2]]['name'], 2], value=1,
+                                                              size=sys.getsizeof(element[value]))
 
-                        # logical_<kv_name>_secrets
-                        elif 'metadata' == path[4]:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                          'secrets', 'secrets',
-                                                          value=1, size=sys.getsizeof(element[value]))
+                            elif 'archive' == path[4]:
+                                # auth_secrets_engine_secrets_archives
+                                prom_metrics = update_metrics(prom_metrics,
+                                                              m_name='vba_secrets_engine_secrets_archives',
+                                                              m_labels=[secretsengines[path[2]]['type'],
+                                                                        secretsengines[path[2]]['name'], 2], value=1,
+                                                              size=sys.getsizeof(element[value]))
 
-                        # logical_<kv_name>_versions
-                        elif 'versions' == path[4]:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                          'versions', 'versions',
-                                                          value=1, size=sys.getsizeof(element[value]))
-
-                        elif path[4] in ['config', 'salt', 'upgrading']:
-                            # already counted
-                            pass
+                            elif 'policy' == path[4]:
+                                # auth_secrets_engine_secrets_policies
+                                prom_metrics = update_metrics(prom_metrics,
+                                                              m_name='vba_secrets_engine_secrets_policies',
+                                                              m_labels=[secretsengines[path[2]]['type'],
+                                                                        secretsengines[path[2]]['name'], 2], value=1,
+                                                              size=sys.getsizeof(element[value]))
 
                         else:
-                            # logical_<kv_name>_unknown_objects
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                          'unknown_objects', 'unknown objects', value=1,
+                            # auth_secrets_engine_objects
+                            prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_objects',
+                                                          m_labels=[secretsengines[path[2]]['type'],
+                                                                    secretsengines[path[2]]['name'], 1], value=1,
                                                           size=sys.getsizeof(element[value]))
-                            # for debug
-                            print(secretsengines[path[2]]['name'], 'kvv2', path)
-                    else:
-                        # TODO: duplication
-                        # logical_<kv_name>_secrets
-                        prom_metrics = update_metrics(prom_metrics,
-                                                      '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                      'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
 
-                        # logical_<kv_name>_secrets
-                        prom_metrics = update_metrics(prom_metrics,
-                                                      '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                      'secrets', 'secrets', value=1, size=sys.getsizeof(element[value]))
-                else:
-                    # logical_<kv_name>_secrets
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                  'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
-
-                    # logical_<kv_name>_secrets
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                  'secrets', 'secrets', value=1, size=sys.getsizeof(element[value]))
+                            # auth_secrets_engine_secrets
+                            prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_secrets',
+                                                          m_labels=[secretsengines[path[2]]['type'],
+                                                                    secretsengines[path[2]]['name'], 1], value=1,
+                                                          size=sys.getsizeof(element[value]))
 
             elif 'transit' == secretsengines[path[2]]['type']:
-                # logical_<transit_name>_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                              'objects', 'objects', value=1, size=sys.getsizeof(element[value]))
+                # secrets_engine_objects
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_objects',
+                                              m_labels=[secretsengines[path[2]]['type'],
+                                                        secretsengines[path[2]]['name'], ''], value=1,
+                                              size=sys.getsizeof(element[value]))
 
-                # logical_<transit_name>_archive
                 if 'archive' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                  path[3], 'archives', value=1, size=sys.getsizeof(element[value]))
-
-                # logical_<transit_name>_policy
-                elif 'policy' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                  path[3], 'policies', value=1, size=sys.getsizeof(element[value]))
-
-                else:
-                    # logical_<transit_name>_unknown_objects
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                                  'unknown_objects', 'unknown objects', value=1,
+                    # secrets_engine_secrets_archives
+                    prom_metrics = update_metrics(prom_metrics,
+                                                  m_name='vba_secrets_engine_secrets_archives',
+                                                  m_labels=[secretsengines[path[2]]['type'],
+                                                            secretsengines[path[2]]['name'], 2], value=1,
                                                   size=sys.getsizeof(element[value]))
-                    print(secretsengines[path[2]]['name'], path)
-            else:
-                # logical_unknown_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], secretsengines[path[2]]['name'])),
-                                              'unknown_objects', 'unknown objects', value=1,
-                                              size=sys.getsizeof(element[value]))
-                # for debug
-                print(secretsengines[path[2]]['name'], path)
+
+                elif 'policy' == path[3]:
+                    # secrets_engine_secrets_policies
+                    prom_metrics = update_metrics(prom_metrics,
+                                                  m_name='vba_secrets_engine_secrets_policies',
+                                                  m_labels=[secretsengines[path[2]]['type'],
+                                                            secretsengines[path[2]]['name'], 2], value=1,
+                                                  size=sys.getsizeof(element[value]))
+
         elif 'sys' == path[1]:
-            # sys_objects
-            prom_metrics = update_metrics(prom_metrics, path[1], 'objects', 'objects', value=1,
-                                          size=sys.getsizeof(element[value]))
-
             if 'counters' == path[2]:
-                # sys_counters_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
-                                              size=sys.getsizeof(element[value]))
-
-            elif 'expire' == path[2]:
-                # sys_expire_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
-                                              size=sys.getsizeof(element[value]))
-
-                # sys_expire_id
-                if 'id' == path[3]:
-                    # will not count. Probably unnecessary statistic
-
-                    if 'auth' == path[4]:
-                        # sys_expire_<path[4]>_<path[5]>_<path[6]>
-                        # sys_expire_auth_<auth_backend>_{login|renew-self}
-                        if 'login' == path[6]:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], path[2], path[4], path[5])), 'logins',
-                                                          'logins', value=1, size=sys.getsizeof(element[value]))
-
-                        elif 'renew-self' == path[6]:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], path[2], path[4], path[5])),
-                                                          'tokens_renewed', 'tokens renewed', value=1,
-                                                          size=sys.getsizeof(element[value]))
-
-                        else:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], path[2], path[4])), 'unknown_objects',
-                                                          'unknown objects', value=1,
-                                                          size=sys.getsizeof(element[value]))
-                            # for debug
-                            print(path[4], path[6], path)
-
-                    elif 'sys' == path[4]:
-                        # sys_expire_wrapped_objects
-                        if 'wrap' == path[6]:
-                            prom_metrics = update_metrics(prom_metrics,
-                                                          '_'.join((path[1], path[2])), 'wrapped_objects',
-                                                          '_'.join(('wrapped', 'objects')), value=1,
-                                                          size=sys.getsizeof(element[value]))
-
-                    elif path[4] in ['config', 'salt', 'upgrading']:
-                        # already counted
-                        pass
-
-                    else:
-                        # sys_expire_unknown_objects
-                        prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])),
-                                                      'unknown_objects', 'unknown objects', value=1,
-                                                      size=sys.getsizeof(element[value]))
-                        # for debug
-                        print(path[2], path)
+                # audit_devices
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_system_objects', m_labels=['counters'],
+                                              value=1, size=sys.getsizeof(element[value]))
 
             elif 'policy' == path[2]:
                 # sys_policy_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
-                                              size=sys.getsizeof(element[value]))
-
-            elif 'token' == path[2]:
-                # sys_token_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
-                                              size=sys.getsizeof(element[value]))
-
-                # sys_token_accessors
-                if 'accessor' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'accessors', 'accessors',
-                                                  value=1, size=sys.getsizeof(element[value]))
-
-                # sys_token_ids
-                elif 'id' == path[3]:
-                    prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'ids', 'ids',
-                                                  value=1, size=sys.getsizeof(element[value]))
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_system_objects', m_labels=['policies'],
+                                              value=1, size=sys.getsizeof(element[value]))
 
             elif 'config' == path[2]:
-                # sys_config_objects
-                prom_metrics = update_metrics(prom_metrics, '_'.join((path[1], path[2])), 'objects', 'objects', value=1,
+                # sys_policy_objects
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_system_objects', m_labels=['config'],
+                                              value=1, size=sys.getsizeof(element[value]))
+
+            elif 'token' == path[2]:
+                uuid = find_uuid_auth_backend(authbackends, path[2])
+
+                prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_objects',
+                                              m_labels=[authbackends[uuid]['type'],
+                                                        authbackends[uuid]['name']], value=1,
                                               size=sys.getsizeof(element[value]))
 
-            else:
-                # sys_unknown_objects
-                prom_metrics = update_metrics(prom_metrics, path[1], 'unknown_objects', 'unknown objects', value=1,
-                                              size=sys.getsizeof(element[value]))
-                print(path[2], path)
-        else:
-            # <unknown_branch>_unknown_objects
-            prom_metrics = update_metrics(prom_metrics, path[1], 'unknown_objects', 'unknown objects', value=1,
-                                          size=sys.getsizeof(element[value]))
-            print(path[1], path)
+                if 'accessor' == path[3]:
+                    # auth_backend_users
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_token_accessors',
+                                                  m_labels=[authbackends[uuid]['type'],
+                                                            authbackends[uuid]['name']], value=1,
+                                                  size=sys.getsizeof(element[value]))
+
+                elif 'id' == path[3]:
+                    # auth_backend_users
+                    prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_tokens',
+                                                  m_labels=[authbackends[uuid]['type'],
+                                                            authbackends[uuid]['name']], value=1,
+                                                  size=sys.getsizeof(element[value]))
+
+            elif 'expire' == path[2]:
+                if 'id' == path[3]:
+                    if 'auth' == path[4]:
+                        uuid = find_uuid_auth_backend(authbackends, path[5])
+
+                        if 'login' == path[6]:
+                            # auth_backend_tokens
+                            prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_tokens',
+                                                          m_labels=[authbackends[uuid]['type'],
+                                                                    authbackends[uuid]['name']], value=1,
+                                                          size=sys.getsizeof(element[value]))
+
+                        elif 'renew-self' == path[6]:
+                            prom_metrics = update_metrics(prom_metrics, m_name='vba_auth_backend_token_renew_self',
+                                                          m_labels=[authbackends[uuid]['type'],
+                                                                    authbackends[uuid]['name']], value=1,
+                                                          size=sys.getsizeof(element[value]))
+
+                    else:
+                        # auth_secrets_engine_objects
+                        prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_objects',
+                                                      m_labels=[path[4],
+                                                                'expire', ''], value=1,
+                                                      size=sys.getsizeof(element[value]))
+                        # auth_secrets_engine_objects
+                        prom_metrics = update_metrics(prom_metrics, m_name='vba_secrets_engine_secrets',
+                                                      m_labels=[path[4],
+                                                                'expire', ''], value=1,
+                                                      size=sys.getsizeof(element[value]))
 
         element = search_for_dict()
 
@@ -622,12 +387,78 @@ if __name__ == "__main__":
     secrets_engines = convert_hvac_dict(vault_client.sys.list_mounted_secrets_engines())
 
     prom_registry = CollectorRegistry()
+    # Init metrics
     metrics = Metrics(registry=prom_registry, pushgateway_addr=PUSHGATEWAY_ADDR, labelnames=label_names,
                       labelvalues=label_values)
 
-    for auth_backend in auth_backends:
-        metrics = update_metrics(metrics, '_'.join(('auth', auth_backends[auth_backend]['name'])),
-                                 'objects', value=0, size=0)
+    metrics_list = {
+        'vba_auth_backend_objects_count': {'label_names': ['type', 'mount_point'],
+                                           'description': 'Count auth backend objects'},
+        'vba_auth_backend_objects_size': {'label_names': ['type', 'mount_point'],
+                                          'description': 'Size of auth backend objects'},
+        'vba_auth_backend_roles_count': {'label_names': ['type', 'mount_point'],
+                                         'description': 'Count auth backend roles'},
+        'vba_auth_backend_roles_size': {'label_names': ['type', 'mount_point'],
+                                        'description': 'Size of auth backend role_ids'},
+        'vba_auth_backend_role_ids_count': {'label_names': ['type', 'mount_point'],
+                                            'description': 'Count auth backend role_ids'},
+        'vba_auth_backend_role_ids_size': {'label_names': ['type', 'mount_point'],
+                                           'description': 'Size of auth backend roles'},
+        'vba_auth_backend_secret_ids_count': {'label_names': ['type', 'mount_point'],
+                                              'description': 'Count auth backend secret_ids'},
+        'vba_auth_backend_secret_ids_size': {'label_names': ['type', 'mount_point'],
+                                             'description': 'Size of auth backend secret_ids'},
+        'vba_auth_backend_secret_ids_accessors_count': {'label_names': ['type', 'mount_point'],
+                                                        'description': 'Count auth backend secret_ids_accessors'},
+        'vba_auth_backend_secret_ids_accessors_size': {'label_names': ['type', 'mount_point'],
+                                                       'description': 'Size of auth backend secret_ids_accessors'},
+        'vba_auth_backend_tokens_count': {'label_names': ['type', 'mount_point'],
+                                          'description': 'Count auth backend tokens'},
+        'vba_auth_backend_tokens_size': {'label_names': ['type', 'mount_point'],
+                                         'description': 'Size of auth backend tokens'},
+        'vba_auth_backend_token_renew_self_count': {'label_names': ['type', 'mount_point'],
+                                                     'description': 'Count auth backend tokens renew self'},
+        'vba_auth_backend_token_renew_self_size': {'label_names': ['type', 'mount_point'],
+                                                    'description': 'Size of auth backend tokens renew self'},
+        'vba_auth_backend_token_accessors_count': {'label_names': ['type', 'mount_point'],
+                                                   'description': 'Count auth backend token accessors'},
+        'vba_auth_backend_token_accessors_size': {'label_names': ['type', 'mount_point'],
+                                                  'description': 'Size of auth backend token accessors'},
+        'vba_auth_backend_users_count': {'label_names': ['type', 'mount_point'],
+                                         'description': 'Count auth backend users'},
+        'vba_auth_backend_users_size': {'label_names': ['type', 'mount_point'],
+                                        'description': 'Size of auth backend users'},
+        'vba_auth_backend_groups_count': {'label_names': ['type', 'mount_point'],
+                                          'description': 'Count auth backend groups'},
+        'vba_auth_backend_groups_size': {'label_names': ['type', 'mount_point'],
+                                         'description': 'Size of auth backend groups'},
+        'vba_secrets_engine_objects_count': {'label_names': ['type', 'mount_point', 'version'],
+                                             'description': 'Count secrets engine objects'},
+        'vba_secrets_engine_objects_size': {'label_names': ['type', 'mount_point', 'version'],
+                                            'description': 'Size of secrets engine objects'},
+        'vba_secrets_engine_secrets_count': {'label_names': ['type', 'mount_point', 'version'],
+                                             'description': 'Count secrets engine secrets'},
+        'vba_secrets_engine_secrets_size': {'label_names': ['type', 'mount_point', 'version'],
+                                            'description': 'Size of secrets engine secrets'},
+        'vba_secrets_engine_secrets_archives_count': {'label_names': ['type', 'mount_point', 'version'],
+                                                      'description': 'Count secrets engine secrets archives'},
+        'vba_secrets_engine_secrets_archives_size': {'label_names': ['type', 'mount_point', 'version'],
+                                                     'description': 'Count secrets engine secrets archives'},
+        'vba_secrets_engine_secrets_policies_count': {'label_names': ['type', 'mount_point', 'version'],
+                                                      'description': 'Count secrets engine secrets policies'},
+        'vba_secrets_engine_secrets_policies_size': {'label_names': ['type', 'mount_point', 'version'],
+                                                     'description': 'Count secrets engine secrets policies'},
+        'vba_secrets_engine_secrets_versions_count': {'label_names': ['type', 'mount_point', 'version'],
+                                                      'description': 'Count secrets engine secrets versions'},
+        'vba_secrets_engine_secrets_versions_size': {'label_names': ['type', 'mount_point', 'version'],
+                                                     'description': 'Count secrets engine secrets versions'},
+        'vba_system_objects_count': {'label_names': ['type'], 'description': 'Count system objects'},
+        'vba_system_objects_size': {'label_names': ['type'], 'description': 'Size of system objects'},
+    }
+
+    for metric in metrics_list.keys():
+        metrics.create_metric(metric_name=metric, description=metrics_list[metric]['description'],
+                              labelnames=metrics_list[metric]['label_names'])
 
     metrics = process_backup(BACKUP_FNAME, metrics, auth_backends, secrets_engines)
 
