@@ -1,0 +1,31 @@
+---
+seed_policies:
+  - name: secret-full
+    policy: |
+      path "secret/*" {
+        capabilities = ["list", "read", "update", "create", "delete"]
+      }
+
+  - name: simple-full
+    policy: |
+      path "simple/*" {
+        capabilities = ["list", "read", "update", "create", "delete"]
+      }
+
+  - name: transit-full
+    policy: |
+      path "transit/*" {
+        capabilities = ["list", "read", "update", "create", "delete"]
+      }
+
+  - name: list-auth-backends
+    policy: |
+      path "sys/auth" {
+        capabilities = ["read"]
+      }
+
+  - name: list-mounted-secrets-engines
+    policy: |
+      path "sys/mounts" {
+        capabilities = ["read"]
+      }
