@@ -1,0 +1,14 @@
+---
+seed_approle:
+  - name: backup-analyzer
+    mount_point: approle
+    params:
+      policies:
+        - list-auth-backends
+        - list-mounted-secrets-engines
+      bind_secret_id: "true"
+      token_ttl: "30s"
+      token_num_uses: "2"
+      token_no_default_policy: "true"
+      secret_id_ttl: "0"
+      secret_id_num_uses: "0"
